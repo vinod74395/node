@@ -426,9 +426,9 @@ class V8_EXPORT_PRIVATE Scanner {
   }
 
   template <typename IsolateT>
-  Handle<String> SourceUrl(IsolateT* isolate) const;
+  DirectHandle<String> SourceUrl(IsolateT* isolate) const;
   template <typename IsolateT>
-  Handle<String> SourceMappingUrl(IsolateT* isolate) const;
+  DirectHandle<String> SourceMappingUrl(IsolateT* isolate) const;
 
   bool SawSourceMappingUrlMagicCommentAtSign() const {
     return saw_source_mapping_url_magic_comment_at_sign_;
@@ -764,6 +764,7 @@ class V8_EXPORT_PRIVATE Scanner {
   LiteralBuffer source_mapping_url_;
   bool saw_source_mapping_url_magic_comment_at_sign_ = false;
   bool saw_magic_comment_compile_hints_all_ = false;
+  bool saw_non_comment_ = false;
 
   // Last-seen positions of potentially problematic tokens.
   Location octal_pos_;

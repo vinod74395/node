@@ -303,7 +303,9 @@ class MarkCompactCollector final {
   void FlushSFI(Tagged<SharedFunctionInfo> sfi,
                 bool bytecode_already_decompiled);
 
+#ifndef V8_ENABLE_LEAPTIERING
   void ProcessFlushedBaselineCandidates();
+#endif  // !V8_ENABLE_LEAPTIERING
 
   // Resets any JSFunctions which have had their bytecode flushed.
   void ClearFlushedJsFunctions();
@@ -332,6 +334,13 @@ class MarkCompactCollector final {
   // weakness clearing.
   void ClearTrivialWeakReferences();
   class ClearTrivialWeakRefJobItem;
+  // Same, but for trusted space.
+  void ClearTrustedWeakReferences();
+  // Common implementation of the above two.
+  template <typename TObjectAndSlot, typename TMaybeSlot>
+  void ClearWeakReferences(
+      WeakObjects::WeakObjectWorklist<TObjectAndSlot>::Local& worklist,
+      Tagged<HeapObjectReference> cleared_weak_ref);
 
   // Goes through the list of encountered non-trivial weak references and
   // filters out those whose values are still alive. This is performed in a
@@ -377,6 +386,8 @@ class MarkCompactCollector final {
 
   void StartSweepNewSpace();
   void SweepLargeSpace(LargeObjectSpace* space);
+
+  void ResetAndRelinkBlackAllocatedPage(PagedSpace*, PageMetadata*);
 
   Heap* const heap_;
 

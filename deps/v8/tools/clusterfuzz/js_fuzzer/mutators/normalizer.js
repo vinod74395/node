@@ -12,7 +12,14 @@
 
 const babelTypes = require('@babel/types');
 
+const common = require('./common.js');
 const mutator = require('./mutator.js');
+
+// Mapping of identifier->resource name, with additional resources only
+// loaded on demand if the respective identifier is found in the code.
+const IDENTIFIER_RESOURCE_MAP = new Map([
+  ['AsyncIterator', 'async_iterator.js'],
+]);
 
 class NormalizerContext {
   constructor() {
@@ -25,11 +32,12 @@ class NormalizerContext {
 class IdentifierNormalizer extends mutator.Mutator {
   constructor() {
     super();
-    this.context = new NormalizerContext();
+    this.normalizerContext = new NormalizerContext();
   }
 
   get visitor() {
-    const context = this.context;
+    const thisMutator = this;
+    const normalizerContext = this.normalizerContext;
     const renamed = new WeakSet();
     const globalMappings = new Map();
 
@@ -44,12 +52,12 @@ class IdentifierNormalizer extends mutator.Mutator {
 
           if (babelTypes.isClassDeclaration(binding.path.node) ||
               babelTypes.isClassExpression(binding.path.node)) {
-            path.scope.rename(name, '__c_' + context.classIndex++);
+            path.scope.rename(name, '__c_' + normalizerContext.classIndex++);
           } else if (babelTypes.isFunctionDeclaration(binding.path.node) ||
                      babelTypes.isFunctionExpression(binding.path.node)) {
-            path.scope.rename(name, '__f_' + context.funcIndex++);
+            path.scope.rename(name, '__f_' + normalizerContext.funcIndex++);
           } else {
-            path.scope.rename(name, '__v_' + context.varIndex++);
+            path.scope.rename(name, '__v_' + normalizerContext.varIndex++);
           }
         }
       },
@@ -61,25 +69,53 @@ class IdentifierNormalizer extends mutator.Mutator {
         const ids = path.getBindingIdentifiers();
         for (const name in ids) {
           if (!path.scope.getBinding(name)) {
-            globalMappings.set(name, '__v_' + context.varIndex++);
+            globalMappings.set(name, '__v_' + normalizerContext.varIndex++);
           }
         }
-      }
+      },
     }, {
       // Second pass to rename globals that weren't declared with
       // var/let/const etc.
-      Identifier(path) {
-        if (!globalMappings.has(path.node.name)) {
-          return;
-        }
+      Identifier: {
+        enter(path) {
+          if (!globalMappings.has(path.node.name)) {
+            return;
+          }
 
-        if (path.scope.getBinding(path.node.name)) {
-          // Don't rename if there is a binding that hides the global.
-          return;
-        }
+          if (path.scope.getBinding(path.node.name)) {
+            // Don't rename if there is a binding that hides the global.
+            return;
+          }
 
-        path.node.name = globalMappings.get(path.node.name);
-      }
+          if (path.node.name === "constructor" &&
+              babelTypes.isClassMethod(path.parent) &&
+              path.parent.key == path.node) {
+            // Don't touch constructors.
+            return;
+          }
+
+          path.node.name = globalMappings.get(path.node.name);
+        },
+        exit(path) {
+          // Ignore already renamed identifiers.
+          if(path.node.name.startsWith('__')) {
+            return;
+          }
+          // Check if remaining identifiers require additional resources.
+          const resource = IDENTIFIER_RESOURCE_MAP.get(path.node.name);
+          if (resource) {
+            thisMutator.context.extraResources.add(resource);
+          }
+        }
+      },
+      FunctionDeclaration(path) {
+        if (path.node.id && babelTypes.isIdentifier(path.node.id)) {
+          if (common.isFunctionIdentifier(path.node.id.name) &&
+              path.node.async) {
+            thisMutator.context.asyncFunctions.add(path.node.id.name);
+          }
+        }
+      },
     }];
   }
 }

@@ -76,6 +76,11 @@ V8_WARN_UNUSED_RESULT V8_INLINE AllocationResult HeapAllocator::AllocateRaw(
   DCHECK(AllowHeapAllocation::IsAllowed());
   CHECK(AllowHeapAllocationInRelease::IsAllowed());
   DCHECK(local_heap_->IsRunning());
+#if V8_ENABLE_WEBASSEMBLY
+  if (!v8_flags.wasm_jitless) {
+    trap_handler::AssertThreadNotInWasm();
+  }
+#endif
 #if DEBUG
   local_heap_->VerifyCurrent();
 #endif
@@ -201,29 +206,6 @@ AllocationResult HeapAllocator::AllocateRaw(int size_in_bytes,
   UNREACHABLE();
 }
 
-AllocationResult HeapAllocator::AllocateRawData(int size_in_bytes,
-                                                AllocationType type,
-                                                AllocationOrigin origin,
-                                                AllocationAlignment alignment) {
-  switch (type) {
-    case AllocationType::kYoung:
-      return AllocateRaw<AllocationType::kYoung>(size_in_bytes, origin,
-                                                 alignment);
-    case AllocationType::kOld:
-      return AllocateRaw<AllocationType::kOld>(size_in_bytes, origin,
-                                               alignment);
-    case AllocationType::kCode:
-    case AllocationType::kMap:
-    case AllocationType::kReadOnly:
-    case AllocationType::kSharedMap:
-    case AllocationType::kSharedOld:
-    case AllocationType::kTrusted:
-    case AllocationType::kSharedTrusted:
-      UNREACHABLE();
-  }
-  UNREACHABLE();
-}
-
 template <HeapAllocator::AllocationRetryMode mode>
 V8_WARN_UNUSED_RESULT V8_INLINE Tagged<HeapObject>
 HeapAllocator::AllocateRawWith(int size, AllocationType allocation,
@@ -257,6 +239,19 @@ HeapAllocator::AllocateRawWith(int size, AllocationType allocation,
     return object;
   }
   return HeapObject();
+}
+
+template <typename Function>
+auto HeapAllocator::TryCustomAllocateWithRetry(Function&& Allocate,
+                                               AllocationType allocation) {
+  for (int i = 0; i < 2; ++i) {
+    if (auto maybe = Allocate()) {
+      return maybe;
+    }
+    CollectAllAvailableGarbage(allocation);
+  }
+
+  return typename std::invoke_result<Function>::type();
 }
 
 }  // namespace internal

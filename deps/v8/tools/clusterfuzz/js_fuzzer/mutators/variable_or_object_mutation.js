@@ -17,6 +17,28 @@ const mutator = require('./mutator.js');
 
 const MAX_MUTATION_RECURSION_DEPTH = 5;
 
+const CHOOSE_MAJOR_GC_PROB = 0.7;
+
+// Stub for testing.
+function chooseCallGC() {
+  return random.choose(0.3);
+}
+
+/**
+ * Append a GC call to an expression with a probability.
+ */
+function maybeGCTemplate(expression) {
+  let templ = expression;
+  if (module.exports.chooseCallGC()) {
+    if (random.choose(CHOOSE_MAJOR_GC_PROB)){
+      templ += ', __callGC(true)';
+    } else {
+      templ += ', __callGC(false)';
+    }
+  }
+  return babelTemplate(templ);
+}
+
 class VariableOrObjectMutator extends mutator.Mutator {
   constructor(settings) {
     super();
@@ -56,22 +78,19 @@ class VariableOrObjectMutator extends mutator.Mutator {
     const mutations = new Array();
 
     if (probability < 0.4) {
-      const template = babelTemplate(
-          'delete IDENTIFIER[PROPERTY], __callGC()')
+      const template = maybeGCTemplate('delete IDENTIFIER[PROPERTY]')
       mutations.push(template({
         IDENTIFIER: randVarOrObject,
         PROPERTY: randProperty
       }));
     } else if (probability < 0.5) {
-      const template = babelTemplate(
-          'IDENTIFIER[PROPERTY], __callGC()')
+      const template = maybeGCTemplate('IDENTIFIER[PROPERTY]')
       mutations.push(template({
         IDENTIFIER: randVarOrObject,
         PROPERTY: randProperty
       }));
     } else if (probability < 0.6) {
-      const template = babelTemplate(
-          'IDENTIFIER[PROPERTY] = RANDOM, __callGC()')
+      const template = maybeGCTemplate('IDENTIFIER[PROPERTY] = RANDOM')
       mutations.push(template({
         IDENTIFIER: randVarOrObject,
         PROPERTY: randProperty,
@@ -82,8 +101,7 @@ class VariableOrObjectMutator extends mutator.Mutator {
           babelTypes.expressionStatement(
               common.callRandomFunction(path, randVarOrObject)));
     } else if (probability < 0.8) {
-      const template = babelTemplate(
-          'VAR = IDENTIFIER, __callGC()')
+      const template = maybeGCTemplate('VAR = IDENTIFIER')
       var randomVar = common.randomVariable(path);
       if (!randomVar) {
         return mutations;
@@ -151,4 +169,5 @@ class VariableOrObjectMutator extends mutator.Mutator {
 
 module.exports = {
   VariableOrObjectMutator: VariableOrObjectMutator,
+  chooseCallGC: chooseCallGC,
 };

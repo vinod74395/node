@@ -71,6 +71,11 @@ struct Word64T : IntegralT {
   static const MachineRepresentation kMachineRepresentation =
       MachineRepresentation::kWord64;
 };
+
+struct AdditiveSafeIntegerT : Word64T {
+  static constexpr MachineType kMachineType = MachineType::Int64();
+};
+
 struct Int64T : Word64T {
   static constexpr MachineType kMachineType = MachineType::Int64();
 };
@@ -121,7 +126,7 @@ struct CppHeapPointerT : UntaggedT {
 };
 #endif  // !V8_COMPRESS_POINTERS
 
-struct Float16T : Word32T {
+struct Float16RawBitsT : Word32T {
   static constexpr MachineType kMachineType = MachineType::Uint16();
 };
 
@@ -299,6 +304,10 @@ template <>
 struct is_subtype<ExternalReference, RawPtrT> {
   static const bool value = true;
 };
+template <>
+struct is_subtype<IntPtrT, RawPtrT> {
+  static const bool value = true;
+};
 
 template <class T, class U>
 struct types_have_common_values {
@@ -318,6 +327,10 @@ struct types_have_common_values<Int32T, U> {
 };
 template <class U>
 struct types_have_common_values<Uint64T, U> {
+  static const bool value = types_have_common_values<Word64T, U>::value;
+};
+template <class U>
+struct types_have_common_values<AdditiveSafeIntegerT, U> {
   static const bool value = types_have_common_values<Word64T, U>::value;
 };
 template <class U>
@@ -361,8 +374,10 @@ struct types_have_common_values<Union<Ts...>, Union<Us...>> {
 template <class T>
 class TNode {
  public:
-  template <class U, typename = std::enable_if_t<is_subtype<U, T>::value>>
-  TNode(const TNode<U>& other) V8_NOEXCEPT : node_(other.node_) {
+  template <class U>
+  TNode(const TNode<U>& other) V8_NOEXCEPT
+    requires(is_subtype<U, T>::value)
+      : node_(other.node_) {
     LazyTemplateChecks();
   }
 
@@ -409,9 +424,9 @@ class SloppyTNode : public TNode<T> {
  public:
   SloppyTNode(compiler::Node* node)  // NOLINT(runtime/explicit)
       : TNode<T>(node) {}
-  template <class U, typename std::enable_if<is_subtype<U, T>::value,
-                                             int>::type = 0>
+  template <class U>
   SloppyTNode(const TNode<U>& other) V8_NOEXCEPT  // NOLINT(runtime/explicit)
+    requires(is_subtype<U, T>::value)
       : TNode<T>(other) {}
 };
 

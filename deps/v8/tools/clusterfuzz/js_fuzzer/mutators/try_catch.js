@@ -6,6 +6,7 @@
  * @fileoverview Try catch wrapper.
  */
 
+const babelTemplate = require('@babel/template').default;
 const babelTypes = require('@babel/types');
 
 const common = require('./common.js');
@@ -13,52 +14,78 @@ const mutator = require('./mutator.js');
 const random = require('../random.js');
 
 // Default target probability for skipping try-catch completely.
-const DEFAULT_SKIP_PROB = 0.2;
+const DEFAULT_SKIP_PROB = 0.05;
 
 // Default target probability to wrap only on toplevel, i.e. to not nest
 // try-catch.
-const DEFAULT_TOPLEVEL_PROB = 0.3;
+const DEFAULT_TOPLEVEL_PROB = 0.5;
 
 // Probability to deviate from defaults and use extreme cases.
-const IGNORE_DEFAULT_PROB = 0.05;
+const IGNORE_DEFAULT_PROB = 0.03;
 
-// Member expressions to be wrapped. List of (object, property) identifier
-// tuples.
-const WRAPPED_MEMBER_EXPRESSIONS = [
-  ['WebAssembly', 'Module'],
-  ['WebAssembly', 'Instantiate'],
-];
+// We don't support 'using' and 'async using'. We wrap var with try-catch.
+const WRAPPABLE_DECL_KINDS = new Set(['let', 'const']);
 
-function wrapTryCatch(node) {
+// This function is defined in resources/fuzz_library.js.
+const WRAP_FUN = babelTemplate('__wrapTC(() => ID)');
+
+function isFunction(node) {
+  return (babelTypes.isArrowFunctionExpression(node) ||
+          babelTypes.isFunctionExpression(node) ||
+          babelTypes.isFunctionDeclaration(node));
+}
+
+function isFunctionBody(path) {
+  const parent = path.parent;
+  return parent && isFunction(parent) && parent.body == path.node;
+}
+
+function _rawTryCatch(node) {
   return babelTypes.tryStatement(
-      babelTypes.blockStatement([node]),
+      node,
       babelTypes.catchClause(
           babelTypes.identifier('e'),
           babelTypes.blockStatement([])));
 }
 
-function wrapTryCatchInFunction(node) {
-  const ret = wrapTryCatch(babelTypes.returnStatement(node));
-  const anonymousFun = babelTypes.functionExpression(
-      null, [], babelTypes.blockStatement([ret]));
-  return babelTypes.callExpression(anonymousFun, []);
+function wrapTryCatch(node) {
+  return _rawTryCatch(babelTypes.blockStatement([node]));
 }
 
-// Wrap particular member expressions after `new` that are known to appear
-// in initializer lists of `let` and `const`.
-function replaceNewExpression(path) {
-  const callee = path.node.callee;
-  if (!babelTypes.isMemberExpression(callee) ||
-      !babelTypes.isIdentifier(callee.object) ||
-      !babelTypes.isIdentifier(callee.property)) {
-    return;
+function wrapBlockWithTryCatch(block) {
+  return babelTypes.blockStatement([_rawTryCatch(block)]);
+}
+
+function skipReplaceVariableDeclarator(path) {
+  return (
+      // Uninitialized variable.
+      !path.node.init ||
+      // Simple initialization with a literal.
+      babelTypes.isLiteral(path.node.init) ||
+      // Initialization with undefined.
+      (babelTypes.isIdentifier(path.node.init) &&
+       path.node.init.name == 'undefined') ||
+      // Consistency check.
+      !babelTypes.isVariableDeclaration(path.parent) ||
+      // Don't wrap variables in loop declarations.
+      babelTypes.isLoop(path.parentPath.parent) ||
+      // Only wrap supported kinds.
+      !WRAPPABLE_DECL_KINDS.has(path.parent.kind))
+}
+
+function replaceVariableDeclarator(path) {
+  let wrapped;
+  if (babelTypes.isAwaitExpression(path.node.init)) {
+    // The await can't remain in the inner arrow function of WRAP_FUN,
+    // we pull it outside of the wrapper instead. E.g.
+    // "await x" becomes "await __wrapTC(() => x)".
+    wrapped = babelTypes.AwaitExpression(
+        WRAP_FUN({ID: path.node.init.argument}).expression);
+  } else {
+    wrapped = WRAP_FUN({ID: path.node.init}).expression;
   }
-  if (WRAPPED_MEMBER_EXPRESSIONS.some(
-      ([object, property]) => callee.object.name === object &&
-                              callee.property.name === property)) {
-    path.replaceWith(wrapTryCatchInFunction(path.node));
-    path.skip();
-  }
+  path.replaceWith(babelTypes.variableDeclarator(path.node.id, wrapped));
+  path.skip();
 }
 
 function replaceAndSkip(path) {
@@ -73,13 +100,18 @@ function replaceAndSkip(path) {
   path.skip();
 }
 
+function replaceBlockStatementAndSkip(path) {
+  path.replaceWith(wrapBlockWithTryCatch(path.node));
+  path.skip();
+}
+
 class AddTryCatchMutator extends mutator.Mutator {
   callWithProb(path, fun) {
     const probability = random.random();
     if (probability < this.skipProb * this.loc) {
       // Entirely skip try-catch wrapper.
       path.skip();
-    } else if (probability < (this.skipProb + this.toplevelProb) * this.loc) {
+    } else if (probability < (this.skipProb + this.toplevelProb)) {
       // Only wrap on top-level.
       fun(path);
     }
@@ -107,7 +139,7 @@ class AddTryCatchMutator extends mutator.Mutator {
           thisMutator.toplevelProb = DEFAULT_TOPLEVEL_PROB;
           // Maybe deviate from target probability for the entire test.
           if (random.choose(IGNORE_DEFAULT_PROB)) {
-            thisMutator.skipProb = random.uniform(0, 1);
+            thisMutator.skipProb = random.uniform(0, 0.5);
             thisMutator.toplevelProb = random.uniform(0, 1);
             thisMutator.annotate(
                 path.node,
@@ -122,6 +154,23 @@ class AddTryCatchMutator extends mutator.Mutator {
             thisMutator.loc = common.getSourceLoc(path.node);
           }
         },
+      },
+      BlockStatement(path) {
+        // It'd be superfluous to wrap existing try statements.
+        if (path.parent && babelTypes.isTryStatement(path.parent)) {
+          path.skip();
+          return;
+        }
+        // Wrap the entire body of a function instead of descending into all
+        // the function's nodes. This also includes return statements.
+        // We only do this with the lower top-level wrapping probability and
+        // don't provide an exit() function here. I.e. if we did descent into
+        // the child nodes, we don't additionally wrap the body.
+        if (isFunctionBody(path) &&
+            path.node.body &&
+            path.node.body.length) {
+          thisMutator.callWithProb(path, replaceBlockStatementAndSkip);
+        }
       },
       ExpressionStatement: accessStatement,
       IfStatement: accessStatement,
@@ -142,15 +191,6 @@ class AddTryCatchMutator extends mutator.Mutator {
       },
       // This covers {While|DoWhile|ForIn|ForOf|For}Statement.
       Loop: accessStatement,
-      NewExpression: {
-        enter(path) {
-          thisMutator.callWithProb(path, replaceNewExpression);
-        },
-        exit(path) {
-          // Apply nested wrapping (is only executed if not skipped above).
-          replaceNewExpression(path);
-        }
-      },
       SwitchStatement: accessStatement,
       VariableDeclaration: {
         enter(path) {
@@ -165,6 +205,19 @@ class AddTryCatchMutator extends mutator.Mutator {
           replaceAndSkip(path);
         }
       },
+      VariableDeclarator: {
+        enter(path) {
+          if (skipReplaceVariableDeclarator(path))
+            return;
+          thisMutator.callWithProb(path, replaceVariableDeclarator);
+        },
+        exit(path) {
+          if (skipReplaceVariableDeclarator(path))
+            return;
+          // Apply nested wrapping (is only executed if not skipped above).
+          replaceVariableDeclarator(path);
+        }
+      },
       WithStatement: accessStatement,
     };
   }
@@ -172,4 +225,5 @@ class AddTryCatchMutator extends mutator.Mutator {
 
 module.exports = {
   AddTryCatchMutator: AddTryCatchMutator,
+  wrapTryCatch: wrapTryCatch,
 }

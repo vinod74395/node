@@ -7,12 +7,12 @@
 #include <optional>
 
 #include "src/compiler/common-operator.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/map-inference.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/verifier.h"
 
 namespace v8 {
@@ -365,11 +365,13 @@ MachineRepresentation NodeProperties::GetProjectionType(
 // static
 bool NodeProperties::IsSame(Node* a, Node* b) {
   for (;;) {
-    if (a->opcode() == IrOpcode::kCheckHeapObject) {
+    if (a->opcode() == IrOpcode::kCheckHeapObject ||
+        a->opcode() == IrOpcode::kTypeGuard) {
       a = GetValueInput(a, 0);
       continue;
     }
-    if (b->opcode() == IrOpcode::kCheckHeapObject) {
+    if (b->opcode() == IrOpcode::kCheckHeapObject ||
+        b->opcode() == IrOpcode::kTypeGuard) {
       b = GetValueInput(b, 0);
       continue;
     }
@@ -428,6 +430,12 @@ NodeProperties::InferMapsResult NodeProperties::InferMapsUnsafe(
   InferMapsResult result = kReliableMaps;
   while (true) {
     switch (effect->opcode()) {
+      case IrOpcode::kTypeGuard: {
+        DCHECK_EQ(1, effect->op()->EffectInputCount());
+        effect = NodeProperties::GetEffectInput(effect);
+        continue;
+      }
+
       case IrOpcode::kMapGuard: {
         Node* const object = GetValueInput(effect, 0);
         if (IsSame(receiver, object)) {
@@ -440,6 +448,15 @@ NodeProperties::InferMapsResult NodeProperties::InferMapsUnsafe(
         Node* const object = GetValueInput(effect, 0);
         if (IsSame(receiver, object)) {
           *maps_out = CheckMapsParametersOf(effect->op()).maps();
+          return result;
+        }
+        break;
+      }
+      case IrOpcode::kTransitionElementsKindOrCheckMap: {
+        Node* const object = GetValueInput(effect, 0);
+        if (IsSame(receiver, object)) {
+          *maps_out = ZoneRefSet<Map>{
+              ElementsTransitionWithMultipleSourcesOf(effect->op()).target()};
           return result;
         }
         break;
@@ -585,6 +602,7 @@ bool NodeProperties::CanBeNullOrUndefined(JSHeapBroker* broker, Node* receiver,
     switch (receiver->opcode()) {
       case IrOpcode::kCheckInternalizedString:
       case IrOpcode::kCheckNumber:
+      case IrOpcode::kCheckNumberFitsInt32:
       case IrOpcode::kCheckSmi:
       case IrOpcode::kCheckString:
       case IrOpcode::kCheckSymbol:

@@ -679,7 +679,8 @@ TNode<Uint32T> InterpreterAssembler::BytecodeOperandIntrinsicId(
 TNode<Object> InterpreterAssembler::LoadConstantPoolEntry(TNode<WordT> index) {
   TNode<TrustedFixedArray> constant_pool = CAST(LoadProtectedPointerField(
       BytecodeArrayTaggedPointer(), BytecodeArray::kConstantPoolOffset));
-  return CAST(LoadArrayElement(constant_pool, TrustedFixedArray::kHeaderSize,
+  return CAST(LoadArrayElement(constant_pool,
+                               OFFSET_OF_DATA_START(TrustedFixedArray),
                                UncheckedCast<IntPtrT>(index), 0));
 }
 
@@ -1406,9 +1407,9 @@ void InterpreterAssembler::OnStackReplacement(
   // Three cases may cause us to attempt OSR, in the following order:
   //
   // 1) Presence of cached OSR Turbofan/Maglev code.
-  // 2) Presence of cached OSR Sparkplug code.
-  // 3) The OSR urgency exceeds the current loop depth - in that case, trigger
-  //    a Turbofan OSR compilation.
+  // 2) The OSR urgency exceeds the current loop depth - in that case, trigger
+  //    a Turbofan/Maglev OSR compilation.
+  // 3) Presence of cached OSR Sparkplug code.
 
   TVARIABLE(Object, maybe_target_code, SmiConstant(0));
   Label osr_to_opt(this), osr_to_sparkplug(this);
@@ -1436,33 +1437,35 @@ void InterpreterAssembler::OnStackReplacement(
   }
 
   // Case 2).
-  if (params == OnStackReplacementParams::kBaselineCodeIsCached) {
-    Goto(&osr_to_sparkplug);
-  } else {
-    DCHECK_EQ(params, OnStackReplacementParams::kDefault);
-    TNode<SharedFunctionInfo> sfi = LoadObjectField<SharedFunctionInfo>(
-        LoadFunctionClosure(), JSFunction::kSharedFunctionInfoOffset);
-    GotoIf(SharedFunctionInfoHasBaselineCode(sfi), &osr_to_sparkplug);
+  {
+    static_assert(FeedbackVector::OsrUrgencyBits::kShift == 0);
+    TNode<Int32T> osr_urgency = Word32And(
+        osr_state, Int32Constant(FeedbackVector::OsrUrgencyBits::kMask));
+    GotoIf(Uint32LessThan(loop_depth, osr_urgency), &osr_to_opt);
 
     // Case 3).
-    {
-      static_assert(FeedbackVector::OsrUrgencyBits::kShift == 0);
-      TNode<Int32T> osr_urgency = Word32And(
-          osr_state, Int32Constant(FeedbackVector::OsrUrgencyBits::kMask));
-      GotoIf(Uint32LessThan(loop_depth, osr_urgency), &osr_to_opt);
+    if (params == OnStackReplacementParams::kBaselineCodeIsCached) {
+      Goto(&osr_to_sparkplug);
+    } else {
+      DCHECK_EQ(params, OnStackReplacementParams::kDefault);
+      TNode<SharedFunctionInfo> sfi = LoadObjectField<SharedFunctionInfo>(
+          LoadFunctionClosure(), JSFunction::kSharedFunctionInfoOffset);
+      GotoIf(SharedFunctionInfoHasBaselineCode(sfi), &osr_to_sparkplug);
       JumpBackward(relative_jump);
     }
   }
 
   BIND(&osr_to_opt);
   {
-    TNode<Uint32T> length =
-        LoadAndUntagBytecodeArrayLength(BytecodeArrayTaggedPointer());
+    TNode<BytecodeArray> bytecode = BytecodeArrayTaggedPointer();
+    TNode<Uint32T> length = LoadAndUntagBytecodeArrayLength(bytecode);
     TNode<Uint32T> weight =
         Uint32Mul(length, Uint32Constant(v8_flags.osr_to_tierup));
     DecreaseInterruptBudget(Signed(weight), kDisableStackCheck);
+    TNode<Smi> expected_param_count =
+        SmiFromInt32(LoadBytecodeArrayParameterCount(bytecode));
     CallBuiltin(Builtin::kInterpreterOnStackReplacement, context,
-                maybe_target_code.value());
+                maybe_target_code.value(), expected_param_count);
     UpdateInterruptBudget(Int32Mul(Signed(weight), Int32Constant(-1)));
     JumpBackward(relative_jump);
   }
@@ -1514,8 +1517,8 @@ void InterpreterAssembler::TraceBytecodeDispatch(TNode<WordT> target_bytecode) {
 bool InterpreterAssembler::TargetSupportsUnalignedAccess() {
 #if V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_RISCV64 || V8_TARGET_ARCH_RISCV32
   return false;
-#elif V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_S390 || \
-    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_PPC64 || \
+#elif V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_S390X || \
+    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_PPC64 ||  \
     V8_TARGET_ARCH_LOONG64
   return true;
 #else

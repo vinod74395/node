@@ -5,10 +5,10 @@
 #include "src/compiler/loop-variable-optimizer.h"
 
 #include "src/compiler/common-operator.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/node-marker.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/node.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/zone/zone-containers.h"
 #include "src/zone/zone.h"
 
@@ -230,12 +230,14 @@ InductionVariable* LoopVariableOptimizer::TryGetInductionVariable(Node* phi) {
   if (arith->opcode() == IrOpcode::kJSAdd ||
       arith->opcode() == IrOpcode::kNumberAdd ||
       arith->opcode() == IrOpcode::kSpeculativeNumberAdd ||
-      arith->opcode() == IrOpcode::kSpeculativeSafeIntegerAdd) {
+      arith->opcode() == IrOpcode::kSpeculativeAdditiveSafeIntegerAdd ||
+      arith->opcode() == IrOpcode::kSpeculativeAdditiveSafeIntegerSubtract ||
+      arith->opcode() == IrOpcode::kSpeculativeSmallIntegerAdd) {
     arithmeticType = InductionVariable::ArithmeticType::kAddition;
   } else if (arith->opcode() == IrOpcode::kJSSubtract ||
              arith->opcode() == IrOpcode::kNumberSubtract ||
              arith->opcode() == IrOpcode::kSpeculativeNumberSubtract ||
-             arith->opcode() == IrOpcode::kSpeculativeSafeIntegerSubtract) {
+             arith->opcode() == IrOpcode::kSpeculativeSmallIntegerSubtract) {
     arithmeticType = InductionVariable::ArithmeticType::kSubtraction;
   } else {
     return nullptr;
